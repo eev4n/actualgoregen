@@ -20,13 +20,15 @@ The generated strings will match the expressions they were generated from. Simil
 to Ruby's randexp library.
 
 E.g.
+
 	regen.Generate("[a-z0-9]{1,64}")
+
 will return a lowercase alphanumeric string
 between 1 and 64 characters long.
 
 Expressions are parsed using the Go standard library's parser: http://golang.org/pkg/regexp/syntax/.
 
-Constraints
+# Constraints
 
 "." will generate any character, not necessarily a printable one.
 
@@ -34,7 +36,7 @@ Constraints
 If you care about the maximum number, specify it explicitly in the expression,
 e.g. "x{0,256}".
 
-Flags
+# Flags
 
 Flags can be passed to the parser by setting them in the GeneratorArgs struct.
 Newline flags are respected, and newlines won't be generated unless the appropriate flags for
@@ -48,22 +50,22 @@ The Perl character class flag is supported, and required if the pattern contains
 
 Unicode groups are not supported at this time. Support may be added in the future.
 
-Concurrent Use
+# Concurrent Use
 
 A generator can safely be used from multiple goroutines without locking.
 
-A large bottleneck with running generators concurrently is actually the entropy source. Sources returned from
-rand.NewSource() are slow to seed, and not safe for concurrent use. Instead, the source passed in GeneratorArgs
-is used to seed an XorShift64 source (algorithm from the paper at http://vigna.di.unimi.it/ftp/papers/xorshift.pdf).
-This source only uses a single variable internally, and is much faster to seed than the default source. One
-source is created per call to NewGenerator. If no source is passed in, the default source is used to seed.
+If no source is passed in GeneratorArgs, generators draw from a cryptographically secure source backed by
+crypto/rand (/dev/urandom, getrandom(2), or the platform CSPRNG). This source is safe for concurrent use and
+requires no seeding, so its output is non-deterministic and not predictable from prior values.
 
-The source is not locked and does not use atomic operations, so there is a chance that multiple goroutines using
-the same source may get the same output. While obviously not cryptographically secure, I think the simplicity and performance
-benefit outweighs the risk of collisions. If you really care about preventing this, the solution is simple: don't
-call a single Generator from multiple goroutines.
+If a source is passed in GeneratorArgs, it is used to seed a fast, non-cryptographic XorShift64 source
+(algorithm from the paper at http://vigna.di.unimi.it/ftp/papers/xorshift.pdf). This is useful when you want
+reproducible output (by passing a constant-seeded source) or need the extra speed and don't require
+cryptographic security. One such source is created per call to NewGenerator. Note that the XorShift64 source is
+not locked and does not use atomic operations, so multiple goroutines sharing one may get the same output; if
+that matters, don't call a single Generator from multiple goroutines.
 
-Benchmarks
+# Benchmarks
 
 Benchmarks are included for creating and running generators for limited-length,
 complex regexes, and simple, highly-repetitive regexes.
@@ -71,6 +73,7 @@ complex regexes, and simple, highly-repetitive regexes.
 	go test -bench .
 
 The complex benchmarks generate fake HTTP messages with the following regex:
+
 	POST (/[-a-zA-Z0-9_.]{3,12}){3,6}
 	Content-Length: [0-9]{2,3}
 	X-Auth-Token: [a-zA-Z0-9+/]{64}
@@ -79,12 +82,14 @@ The complex benchmarks generate fake HTTP messages with the following regex:
 	){3,15}[A-Za-z0-9+/]{60}([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)
 
 The repetitive benchmarks use the regex
+
 	a{999}
 
 See regen_benchmarks_test.go for more information.
 
 On my mid-2014 MacBook Pro (2.6GHz Intel Core i5, 8GB 1600MHz DDR3),
 the results of running the benchmarks with minimal load are:
+
 	BenchmarkComplexCreation-4                       200	   8322160 ns/op
 	BenchmarkComplexGeneration-4                   10000	    153625 ns/op
 	BenchmarkLargeRepeatCreateSerial-4  	        3000	    411772 ns/op
@@ -112,8 +117,9 @@ type CaptureGroupHandler func(index int, name string, group *syntax.Regexp, gene
 // GeneratorArgs are arguments passed to NewGenerator that control how generators
 // are created.
 type GeneratorArgs struct {
-	// May be nil.
-	// Used to seed a custom RNG that is a lot faster than the default implementation.
+	// May be nil. If nil, a cryptographically secure crypto/rand source is used.
+	// If set, it seeds a fast, non-cryptographic XorShift64 RNG (pass a constant
+	// seed for reproducible output).
 	// See http://vigna.di.unimi.it/ftp/papers/xorshift.pdf.
 	RngSource rand.Source
 
@@ -136,14 +142,14 @@ type GeneratorArgs struct {
 }
 
 func (a *GeneratorArgs) initialize() error {
-	var seed int64
 	if nil == a.RngSource {
-		seed = rand.Int63()
+		// no source supplied; use the crypto/rand-backed source.
+		a.rng = newCryptoRand()
 	} else {
-		seed = a.RngSource.Int63()
+		// explicit source; seed the fast, non-cryptographic xor-shift source.
+		rngSource := xorShift64Source(a.RngSource.Int63())
+		a.rng = rand.New(&rngSource)
 	}
-	rngSource := xorShift64Source(seed)
-	a.rng = rand.New(&rngSource)
 
 	// unicode groups only allowed with Perl
 	if (a.Flags&syntax.UnicodeGroups) == syntax.UnicodeGroups && (a.Flags&syntax.Perl) != syntax.Perl {
@@ -185,8 +191,9 @@ type Generator interface {
 Generate a random string that matches the regular expression pattern.
 If args is nil, default values are used.
 
-This function does not seed the default RNG, so you must call rand.Seed() if you want
-non-deterministic strings.
+By default this uses a cryptographically secure RNG (crypto/rand), so the output is
+non-deterministic without any seeding. To get reproducible output, create a generator
+with NewGenerator and pass a constant-seeded RngSource in GeneratorArgs.
 */
 func Generate(pattern string) (string, error) {
 	generator, err := NewGenerator(pattern, nil)

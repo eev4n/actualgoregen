@@ -16,16 +16,52 @@ limitations under the License.
 
 package regen
 
+import (
+	cryptorand "crypto/rand"
+	"encoding/binary"
+	"math/rand"
+)
+
+// cryptoSource is a rand.Source64 backed by crypto/rand (/dev/urandom etc).
+// it is cryptographically secure and safe for concurrent use.
+type cryptoSource struct{}
+
+// seed is a no-op; a csprng can't be seeded.
+func (cryptoSource) Seed(int64) {}
+
+func (s cryptoSource) Int63() int64 {
+	// mask the sign bit so the result is non-negative.
+	return int64(s.Uint64() & (1<<63 - 1))
+}
+
+func (cryptoSource) Uint64() uint64 {
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		// no safe way to continue without entropy, so fail loudly.
+		panic("regen: unable to read from crypto/rand: " + err.Error())
+	}
+	return binary.BigEndian.Uint64(b[:])
+}
+
+func newCryptoRand() *rand.Rand {
+	return rand.New(cryptoSource{})
+}
+
 /*
 The default Source implementation is very slow to seed. Replaced with a
 64-bit xor-shift source from http://vigna.di.unimi.it/ftp/papers/xorshift.pdf.
 This source seeds very quickly, and only uses a single variable, so concurrent
 modification by multiple goroutines is possible.
 
+not cryptographically secure; only used when the caller supplies an explicit
+RngSource. otherwise a cryptoSource is used.
+
 To create a seeded source:
+
 	randSource := xorShift64Source(mySeed)
 
 To create a source with the default seed:
+
 	var randSource xorShift64Source
 */
 type xorShift64Source uint64
